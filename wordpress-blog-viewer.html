@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WordPress XML Archive Viewer</title>
+    <style>
+        :root {
+            --bg-color: #f4f7f6;
+            --card-bg: #ffffff;
+            --text-color: #2c3e50;
+            --primary-color: #0073aa;
+            --border-color: #dadcda;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            margin: 0;
+            padding: 0;
+        }
+
+        header {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 2rem 1rem;
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .upload-zone {
+            background: var(--card-bg);
+            border: 2px dashed var(--primary-color);
+            padding: 2rem;
+            text-align: center;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+        }
+
+        .upload-zone input {
+            display: none;
+        }
+
+        .btn {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 0.5rem 1.5rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+        }
+
+        #stats {
+            font-weight: bold;
+            margin-bottom: 1.5rem;
+            display: none;
+            background: #eef7fc;
+            padding: 1rem;
+            border-radius: 6px;
+            border-left: 4px solid var(--primary-color);
+        }
+
+        .post-card {
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            border: 1px solid var(--border-color);
+        }
+
+        .post-title {
+            margin-top: 0;
+            color: var(--primary-color);
+        }
+
+        .post-meta {
+            font-size: 0.85rem;
+            color: #7f8c8d;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.5rem;
+        }
+
+        .post-content {
+            word-wrap: break-word;
+        }
+
+        .post-content img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 1rem auto;
+        }
+
+        .post-content pre {
+            background: #eee;
+            padding: 1rem;
+            overflow-x: auto;
+            border-radius: 4px;
+        }
+
+        .post-content blockquote {
+            border-left: 4px solid var(--primary-color);
+            margin: 1rem 0;
+            padding-left: 1rem;
+            font-style: italic;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1 id="blog-title">WordPress Archive Viewer</h1>
+        <p id="blog-tagline">Locally parse and read your WXR export file</p>
+    </header>
+
+    <div class="container">
+        <div class="upload-zone" id="drop-zone">
+            <p>Drag and drop your WordPress .xml export file here</p>
+            <p>or</p>
+            <button class="btn" onclick="document.getElementById('file-input').click()">Choose File</button>
+            <input type="file" id="file-input" accept=".xml">
+        </div>
+
+        <div id="stats"></div>
+        <div id="blog-posts"></div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('file-input');
+        const dropZone = document.getElementById('drop-zone');
+
+        fileInput.addEventListener('change', handleFile);
+
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.background = '#eef7fc'; });
+        dropZone.addEventListener('dragleave', () => { dropZone.style.background = 'var(--card-bg)'; });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.style.background = 'var(--card-bg)';
+            if (e.dataTransfer.files.length) {
+                fileInput.files = e.dataTransfer.files;
+                handleFile();
+            }
+        });
+
+        function handleFile() {
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                parseWordPressXML(e.target.result);
+            };
+            reader.readAsText(file);
+        }
+
+        // Helper to grab text inside nodes even if the browser renames or parses namespaces poorly
+        function getNamespaceValue(itemNode, tagBaseName) {
+            // Try standard namespace-agnostic lookup
+            let elements = itemNode.getElementsByTagNameNS("*", tagBaseName);
+            if (elements && elements.length > 0) return elements[0].textContent;
+
+            // Fallback strategy: check variations of standard CSS selectors
+            let querySelectors = [
+                tagBaseName, 
+                `wp\\:${tagBaseName}`, 
+                `content\\:${tagBaseName}`, 
+                `dc\\:${tagBaseName}`
+            ];
+            
+            for (let selector of querySelectors) {
+                try {
+                    let el = itemNode.querySelector(selector);
+                    if (el) return el.textContent;
+                } catch(e) {}
+            }
+            return "";
+        }
+
+        function parseWordPressXML(xmlText) {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+
+            // Look for errors in parsing
+            const parseError = xmlDoc.querySelector("parsererror");
+            if (parseError) {
+                alert("Error parsing XML file. Ensure it is a valid WordPress Export file.");
+                return;
+            }
+
+            const channel = xmlDoc.querySelector("channel");
+            if (!channel) {
+                alert("Invalid XML layout. Could not find RSS channel.");
+                return;
+            }
+
+            const blogTitle = channel.querySelector("title")?.textContent || "WordPress Archive";
+            const blogTagline = channel.querySelector("description")?.textContent || "";
+            
+            document.getElementById('blog-title').textContent = blogTitle;
+            document.getElementById('blog-tagline').textContent = blogTagline;
+
+            const items = xmlDoc.querySelectorAll("item");
+            const postsContainer = document.getElementById('blog-posts');
+            const statsContainer = document.getElementById('stats');
+            
+            postsContainer.innerHTML = ""; 
+            let postCount = 0;
+            let skippedCount = 0;
+
+            items.forEach(item => {
+                const postType = getNamespaceValue(item, "post_type") || "post";
+                const status = getNamespaceValue(item, "status") || "publish";
+                const content = getNamespaceValue(item, "encoded");
+
+                // Target standard blog posts that are live
+                if (postType === "post" && status === "private") {
+                    postCount++;
+
+                    const title = item.querySelector("title")?.textContent || "Untitled Post";
+                    const pubDate = item.querySelector("pubDate")?.textContent || "";
+                    let formattedContent = content || "";
+
+                    if (!formattedContent.includes("<p>")) {
+                        formattedContent = formattedContent.split("\n\n").map(para => `<p>${para.replace(/\n/g, "<br>")}</p>`).join("");
+                    }
+
+                    const card = document.createElement('article');
+                    card.className = 'post-card';
+
+                    const dateFormatted = pubDate ? new Date(pubDate).toLocaleDateString(undefined, {
+                        year: 'numeric', month: 'long', day: 'numeric'
+                    }) : "Unknown Date";
+
+                    card.innerHTML = `
+                        <h2 class="post-title">${title}</h2>
+                        <div class="post-meta">Published on: ${dateFormatted}</div>
+                        <div class="post-content">${formattedContent}</div>
+                    `;
+
+                    postsContainer.appendChild(card);
+                } else {
+                    skippedCount++;
+                }
+            });
+
+            statsContainer.innerHTML = `Success! Loaded <strong>${postCount}</strong> published blog posts (and filtered out ${skippedCount} items like drafts, media attachments, or pages).`;
+            statsContainer.style.display = 'block';
+            dropZone.style.display = 'none'; 
+        }
+    </script>
+</body>
+</html>
